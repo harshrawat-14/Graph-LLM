@@ -33,3 +33,6 @@ Thumbs.db
 # Logs
 *.log
 /tmp/
+
+# Data source
+sap-o2c-data/

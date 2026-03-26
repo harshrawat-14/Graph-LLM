@@ -25,6 +25,8 @@ NODE_COLORS = {
     "Invoice": "#EAB308",      # yellow
     "Payment": "#14B8A6",      # teal
     "JournalEntry": "#6366F1", # indigo
+    "Plant": "#94A3B8",        # slate
+    "ScheduleLine": "#F472B6", # pink
     "BrokenFlow": "#EF4444",   # red
 }
 
@@ -72,6 +74,8 @@ def build_graph(db_path: str) -> nx.DiGraph:
         _add_invoices(G, conn)
         _add_payments(G, conn)
         _add_journal_entries(G, conn)
+        _add_plants(G, conn)
+        _add_schedule_lines(G, conn)
         _add_broken_flows(G, conn)
     finally:
         conn.close()
@@ -235,6 +239,46 @@ def _add_journal_entries(G: nx.DiGraph, conn: sqlite3.Connection):
             if G.has_node(inv_node):
                 G.add_edge(inv_node, je_node, **_make_edge(
                     inv_node, je_node, "JOURNAL_ENTRY"
+                ))
+
+def _add_plants(G: nx.DiGraph, conn: sqlite3.Connection):
+    for row in conn.execute("SELECT * FROM plants"):
+        r = dict(row)
+        meta = _row_to_dict(row)
+        plant_node = f"PL-{r['id']}"
+        G.add_node(plant_node, **_make_node(
+            plant_node, "Plant",
+            r.get("name") or f"Plant {r['id']}",
+            meta
+        ))
+    
+    # Link Deliveries to Plants
+    for row in conn.execute("SELECT id, plant FROM deliveries WHERE plant IS NOT NULL"):
+        del_id = row[0]
+        plant_id = row[1]
+        del_node = f"D-{del_id}"
+        plant_node = f"PL-{plant_id}"
+        if G.has_node(del_node) and G.has_node(plant_node):
+            G.add_edge(del_node, plant_node, **_make_edge(
+                del_node, plant_node, "FROM_PLANT"
+            ))
+
+def _add_schedule_lines(G: nx.DiGraph, conn: sqlite3.Connection):
+    for row in conn.execute("SELECT * FROM schedule_lines"):
+        r = dict(row)
+        meta = _row_to_dict(row)
+        sched_node = f"SL-{r['id']}"
+        G.add_node(sched_node, **_make_node(
+            sched_node, "ScheduleLine",
+            f"Schedule {r['id']}",
+            meta
+        ))
+        # Edge: OrderItem → ScheduleLine (SCHEDULED_AS)
+        if r.get("order_item_id"):
+            item_node = f"OI-{r['order_item_id']}"
+            if G.has_node(item_node):
+                G.add_edge(item_node, sched_node, **_make_edge(
+                    item_node, sched_node, "SCHEDULED_AS"
                 ))
 
 

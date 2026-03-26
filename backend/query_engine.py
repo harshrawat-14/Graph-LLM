@@ -40,61 +40,53 @@ try:
     from groq import Groq
 except ImportError:
     Groq = None
-
-
 # ─── Layer 1: Domain Guardrail ───────────────────────────────────────────────
+#
+# Design: Instead of maintaining a fragile whitelist of "allowed" keywords
+# (which breaks every time we add a table), we use a small BLOCKLIST of
+# clearly off-topic categories.  Everything else is passed through to the
+# LLM, which already has its own OUT_OF_DOMAIN check in the system prompt
+# and can make much smarter relevance decisions because it sees the full
+# schema.
+#
+# This makes the guardrail:
+#   ✓  Zero-maintenance when new tables are added
+#   ✓  Very unlikely to block legitimate business queries
+#   ✗  Slightly more LLM calls for obvious junk (acceptable trade-off)
 
-DOMAIN_KEYWORDS = {
-    # Entities
-    "customer", "customers", "order", "orders", "delivery", "deliveries",
-    "invoice", "invoices", "payment", "payments", "product", "products",
-    "billing", "journal", "entry", "entries",
-    # Actions / states
-    "delivered", "shipped", "paid", "unpaid", "cancelled", "billed",
-    "pending", "complete", "incomplete", "missing", "broken",
-    # Metrics
-    "amount", "total", "sum", "average", "count", "quantity", "price",
-    "revenue", "sales", "top", "most", "highest", "lowest", "rank",
-    # Flow / graph
-    "trace", "follow", "path", "flow", "chain", "journey", "track",
-    "connected", "linked", "related",
-    # Dates
-    "date", "month", "year", "recent", "latest", "oldest",
-    # SAP-specific
-    "sap", "o2c", "order-to-cash", "billing document", "accounting",
-    "plant", "currency", "status",
-}
-
-# Broader pattern matching for domain relevance
-DOMAIN_PATTERNS = [
-    r"(?:how many|count of|number of)\s+\w*(?:order|customer|delivery|invoice|payment|product)",
-    r"(?:which|what|who|list|show|find|get)\s+\w*(?:order|customer|delivery|invoice|payment|product)",
-    r"(?:total|sum|average|avg|max|min)\s+\w*(?:amount|price|quantity|revenue|sales)",
-    r"(?:trace|follow|track)\s+\w*(?:order|delivery|invoice|billing|document|flow)",
-    r"(?:incomplete|broken|missing|without)\s+\w*(?:delivery|invoice|payment|flow)",
-    r"\b\d{6,}\b",  # Looks like a business ID
+OFF_TOPIC_PATTERNS = [
+    r"\b(?:weather|forecast|temperature|rain|sunny)\b",
+    r"\b(?:recipe|cook|ingredient|calories)\b",
+    r"\b(?:sports|cricket|football|basketball|score|goal)\b",
+    r"\b(?:movie|song|lyrics|actor|actress|netflix)\b",
+    r"\b(?:capital of|president of|prime minister)\b",
+    r"\b(?:translate|definition of|meaning of)\b",
+    r"\b(?:write me a poem|tell me a joke|hello|hi there|how are you)\b",
 ]
 
 
 def is_domain_query(question: str) -> Tuple[bool, str]:
     """
-    Check if the question is about the business domain.
-    Returns (is_domain, reason).
+    Lightweight guardrail: only block questions that are OBVIOUSLY off-topic.
+    Everything else goes to the LLM which has its own OUT_OF_DOMAIN check.
     """
-    q_lower = question.lower()
-    tokens = set(re.findall(r'\w+', q_lower))
+    q_lower = question.lower().strip()
 
-    # Direct keyword match
-    matched = tokens.intersection(DOMAIN_KEYWORDS)
-    if len(matched) >= 1:
-        return True, f"Matched keywords: {matched}"
+    # Very short queries (< 3 chars) are likely noise
+    if len(q_lower) < 3:
+        return False, "Query too short"
 
-    # Pattern matching
-    for pattern in DOMAIN_PATTERNS:
+    # Check against off-topic blocklist
+    for pattern in OFF_TOPIC_PATTERNS:
         if re.search(pattern, q_lower):
-            return True, f"Pattern match: {pattern}"
+            return False, f"Off-topic pattern: {pattern}"
 
-    return False, "No domain keywords or patterns found"
+    # If it contains a numeric ID (6+ digits), it's almost certainly domain
+    if re.search(r"\b\d{6,}\b", q_lower):
+        return True, "Contains business ID pattern"
+
+    # Default: let it through — the LLM will decide
+    return True, "Passed to LLM for evaluation"
 
 
 def classify_intent(question: str) -> str:
@@ -267,91 +259,190 @@ def _fuzzy_match_names(question: str, db_conn: sqlite3.Connection) -> List[dict]
 FULL_SCHEMA_DDL = """
 -- customers: Business partners / buyers
 CREATE TABLE customers (
-    id TEXT PRIMARY KEY,            -- SAP businessPartner ID
-    name TEXT,                      -- Full company/person name
-    country TEXT,                   -- ISO country code
-    city TEXT,                      -- City name
-    address_id TEXT,                -- FK to addresses
-    created_at TEXT                 -- Account creation date (YYYY-MM-DD)
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    country TEXT,
+    city TEXT,
+    address_id TEXT,
+    created_at TEXT
 );
 
 -- products: Materials / items that can be ordered
 CREATE TABLE products (
-    id TEXT PRIMARY KEY,            -- SAP material/product number
-    name TEXT,                      -- Product description (English)
-    category TEXT,                  -- Product group code
-    unit_price REAL,                -- Price per unit (may be NULL)
-    currency TEXT                   -- Currency code
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    category TEXT,
+    unit_price REAL,
+    currency TEXT
 );
 
 -- addresses: Physical addresses for business partners
 CREATE TABLE addresses (
-    id TEXT PRIMARY KEY,            -- SAP address ID
-    street TEXT,                    -- Street name and number
-    city TEXT,                      -- City name
-    country TEXT,                   -- ISO country code
-    postal_code TEXT                -- ZIP/postal code
+    id TEXT PRIMARY KEY,
+    street TEXT,
+    city TEXT,
+    country TEXT,
+    postal_code TEXT
 );
 
 -- orders: Sales orders placed by customers
 CREATE TABLE orders (
-    id TEXT PRIMARY KEY,            -- SAP sales order number
-    customer_id TEXT,               -- FK to customers.id (SAP soldToParty)
-    order_date TEXT,                -- Order creation date (YYYY-MM-DD)
-    status TEXT,                    -- OPEN, NOT_DELIVERED, PARTIALLY_DELIVERED, FULLY_DELIVERED
-    total_amount REAL,              -- Total net amount of the order
-    currency TEXT                   -- Transaction currency code
+    id TEXT PRIMARY KEY,
+    customer_id TEXT,
+    order_date TEXT,
+    status TEXT,
+    total_amount REAL,
+    currency TEXT
 );
 
 -- order_items: Line items within a sales order
 CREATE TABLE order_items (
-    id TEXT PRIMARY KEY,            -- Composite: salesOrder-salesOrderItem
-    order_id TEXT,                  -- FK to orders.id
-    product_id TEXT,                -- FK to products.id (SAP material)
-    quantity REAL,                  -- Requested quantity
-    unit_price REAL,                -- Price per unit (computed: netAmount/quantity)
-    line_amount REAL                -- Total line net amount
+    id TEXT PRIMARY KEY,
+    order_id TEXT,
+    product_id TEXT,
+    quantity REAL,
+    unit_price REAL,
+    line_amount REAL
 );
 
 -- deliveries: Outbound delivery documents
 CREATE TABLE deliveries (
-    id TEXT PRIMARY KEY,            -- SAP delivery document number
-    order_id TEXT,                  -- FK to orders.id (via delivery items)
-    plant TEXT,                     -- Shipping plant code
-    delivery_date TEXT,             -- Actual goods movement date or creation date
-    status TEXT                     -- NOT_YET_STARTED, PARTIALLY_COMPLETED, COMPLETED
+    id TEXT PRIMARY KEY,
+    order_id TEXT,
+    plant TEXT,
+    delivery_date TEXT,
+    status TEXT
 );
 
 -- invoices: Billing documents
 CREATE TABLE invoices (
-    id TEXT PRIMARY KEY,            -- SAP billing document number
-    order_id TEXT,                  -- FK to orders.id (resolved via billing items)
-    delivery_id TEXT,               -- FK to deliveries.id (via billing items reference)
-    customer_id TEXT,               -- FK to customers.id (SAP soldToParty)
-    amount REAL,                    -- Total net amount billed
-    currency TEXT,                  -- Transaction currency
-    issue_date TEXT,                -- Billing document date (YYYY-MM-DD)
-    status TEXT,                    -- PAID, UNPAID, or CANCELLED
-    accounting_document TEXT        -- SAP accounting document (used for payment joins)
+    id TEXT PRIMARY KEY,
+    order_id TEXT,
+    delivery_id TEXT,
+    customer_id TEXT,
+    amount REAL,
+    currency TEXT,
+    issue_date TEXT,
+    status TEXT,
+    accounting_document TEXT
 );
 
 -- payments: Accounts receivable payment records
 CREATE TABLE payments (
-    id TEXT PRIMARY KEY,            -- Composite: accountingDocument-item
-    invoice_id TEXT,                -- FK to invoices.id (joined via clearingAccountingDocument)
-    amount REAL,                    -- Payment amount in transaction currency
-    payment_date TEXT,              -- Clearing/posting date (YYYY-MM-DD)
-    method TEXT                     -- Financial account type (e.g. 'D' for receivable)
+    id TEXT PRIMARY KEY,
+    invoice_id TEXT,
+    amount REAL,
+    payment_date TEXT,
+    method TEXT
 );
 
 -- journal_entries: General ledger journal entries
 CREATE TABLE journal_entries (
-    id TEXT PRIMARY KEY,            -- Composite: JE-accountingDocument-item
-    invoice_id TEXT,                -- FK to invoices.id (matched via accounting document)
-    entry_date TEXT,                -- Posting date (YYYY-MM-DD)
-    debit_amount REAL,              -- Debit amount (positive entries)
-    credit_amount REAL,             -- Credit amount (negative entries)
-    account_code TEXT               -- GL account code
+    id TEXT PRIMARY KEY,
+    invoice_id TEXT,
+    entry_date TEXT,
+    debit_amount REAL,
+    credit_amount REAL,
+    account_code TEXT
+);
+
+-- ── Enrichment Tables ──
+
+-- schedule_lines: Confirmed delivery dates and quantities per order item
+CREATE TABLE schedule_lines (
+    id TEXT PRIMARY KEY,
+    order_id TEXT,
+    order_item_id TEXT,
+    requested_date TEXT,
+    confirmed_date TEXT,
+    confirmed_quantity REAL,
+    delivery_block TEXT
+);
+
+-- plants: Manufacturing or shipping locations
+CREATE TABLE plants (
+    id TEXT PRIMARY KEY,
+    name TEXT,
+    country TEXT,
+    city TEXT,
+    company_code TEXT
+);
+
+-- storage_locations: Specific warehouse slots within a plant
+CREATE TABLE storage_locations (
+    id TEXT PRIMARY KEY,
+    plant_id TEXT,
+    location_code TEXT,
+    name TEXT
+);
+
+-- sales_areas: Sales organization, distribution channel, and division
+CREATE TABLE sales_areas (
+    id TEXT PRIMARY KEY,
+    sales_org TEXT,
+    dist_channel TEXT,
+    division TEXT,
+    name TEXT
+);
+
+-- customer_sales_areas: Customer specific settings for a sales area
+CREATE TABLE customer_sales_areas (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT,
+    sales_org TEXT,
+    dist_channel TEXT,
+    division TEXT,
+    currency TEXT,
+    payment_terms TEXT
+);
+
+-- pricing_conditions: Discounts, surcharges, and taxes for orders
+CREATE TABLE pricing_conditions (
+    id TEXT PRIMARY KEY,
+    order_id TEXT,
+    condition_type TEXT,
+    amount REAL,
+    currency TEXT
+);
+
+-- credit_management: Customer credit limits and blocks
+CREATE TABLE credit_management (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT,
+    credit_limit REAL,
+    currency TEXT,
+    credit_exposure REAL,
+    credit_block TEXT,
+    last_check_date TEXT
+);
+
+-- material_docs: Goods movements (GI/GR) documents
+CREATE TABLE material_docs (
+    id TEXT PRIMARY KEY,
+    delivery_id TEXT,
+    posting_date TEXT,
+    movement_type TEXT,
+    quantity REAL,
+    plant TEXT,
+    storage_loc TEXT
+);
+
+-- customer_material_info: Maps customer part numbers to SAP material IDs
+CREATE TABLE customer_material_info (
+    id TEXT PRIMARY KEY,
+    customer_id TEXT,
+    product_id TEXT,
+    customer_mat_num TEXT,
+    sales_org TEXT,
+    dist_channel TEXT
+);
+
+-- partner_functions: Payer, Ship-to, and Bill-to roles for an order
+CREATE TABLE partner_functions (
+    id TEXT PRIMARY KEY,
+    order_id TEXT,
+    partner_func TEXT,
+    partner_id TEXT
 );
 """
 
@@ -369,13 +460,20 @@ for line in FULL_SCHEMA_DDL.strip().split("\n"):
 
 # Map of question keywords → relevant tables
 TABLE_RELEVANCE = {
-    "customer": ["customers", "orders", "addresses"],
-    "order": ["orders", "order_items", "customers"],
-    "delivery": ["deliveries", "orders"],
-    "invoice": ["invoices", "orders", "deliveries", "payments"],
+    "customer": ["customers", "orders", "addresses", "credit_management", "customer_sales_areas", "customer_material_info"],
+    "order": ["orders", "order_items", "customers", "schedule_lines", "pricing_conditions", "partner_functions"],
+    "delivery": ["deliveries", "orders", "material_docs"],
+    "invoice": ["invoices", "orders", "deliveries", "payments", "journal_entries"],
     "billing": ["invoices", "orders", "deliveries", "payments"],
     "payment": ["payments", "invoices"],
-    "product": ["products", "order_items", "orders"],
+    "product": ["products", "order_items", "orders", "customer_material_info"],
+    "plant": ["plants", "deliveries", "storage_locations", "material_docs"],
+    "warehouse": ["storage_locations", "plants", "material_docs"],
+    "credit": ["credit_management", "customers"],
+    "price": ["pricing_conditions", "order_items"],
+    "discount": ["pricing_conditions"],
+    "schedule": ["schedule_lines", "orders"],
+    "confirmed": ["schedule_lines"],
     "journal": ["journal_entries", "invoices"],
     "address": ["addresses", "customers"],
     "amount": ["orders", "invoices", "payments", "order_items"],
@@ -447,16 +545,27 @@ OUTPUT FORMAT:
 
 FEW-SHOT EXAMPLES:
 
-Q: "Which products are in the most billing documents?"
+Q: "Which products appear in the most billing documents?"
 A: {{"intent":"aggregation","sql":"SELECT p.name, p.id, COUNT(DISTINCT i.id) AS invoice_count FROM products p JOIN order_items oi ON oi.product_id = p.id JOIN orders o ON o.id = oi.order_id JOIN invoices i ON i.order_id = o.id GROUP BY p.id, p.name ORDER BY invoice_count DESC LIMIT 10","tables_used":["products","order_items","orders","invoices"],"explanation":"Counts distinct invoices per product through order item joins","requires_graph_traversal":false}}
 
 Q: "Find orders delivered but never billed"
 A: {{"intent":"broken_flow","sql":"SELECT o.id, o.customer_id, o.order_date, o.total_amount FROM orders o JOIN deliveries d ON d.order_id = o.id LEFT JOIN invoices i ON i.order_id = o.id WHERE i.id IS NULL","tables_used":["orders","deliveries","invoices"],"explanation":"Orders with a delivery but no corresponding invoice","requires_graph_traversal":false}}
 
+Q: "Show all plants and their cities"
+A: {{"intent":"entity_lookup","sql":"SELECT id, name, city, country FROM plants","tables_used":["plants"],"explanation":"List of all manufacturing/shipping plants and their locations","requires_graph_traversal":false}}
+
+Q: "Which orders have a confirmed quantity less than requested?"
+A: {{"intent":"broken_flow","sql":"SELECT o.id, oi.product_id, oi.quantity as requested, sl.confirmed_quantity FROM orders o JOIN order_items oi ON oi.order_id = o.id JOIN schedule_lines sl ON sl.order_item_id = oi.id WHERE sl.confirmed_quantity < oi.quantity","tables_used":["orders","order_items","schedule_lines"],"explanation":"Identifies orders where SAP has not confirmed the full requested quantity","requires_graph_traversal":false}}
+
+Q: "Check credit exposure for customer 105001"
+A: {{"intent":"entity_lookup","sql":"SELECT c.name, cm.credit_limit, cm.credit_exposure, cm.credit_block FROM customers c JOIN credit_management cm ON cm.customer_id = c.id WHERE c.id = '105001'","tables_used":["customers","credit_management"],"explanation":"Lookup credit limit and exposure for customer 105001","requires_graph_traversal":false}}
+
+Q: "What is the weather in Delhi?"
+A: {{"error": "OUT_OF_DOMAIN"}}
+
 Q: "Show details of order 740506"
 A: {{"intent":"entity_lookup","sql":"SELECT o.*, c.name as customer_name FROM orders o LEFT JOIN customers c ON c.id = o.customer_id WHERE o.id = '740506'","tables_used":["orders","customers"],"explanation":"Lookup order 740506 with customer info","requires_graph_traversal":false}}
 
-Q: "What is the weather in Delhi?"
 A: {{"error": "OUT_OF_DOMAIN"}}
 
 Q: "How many orders does each customer have?"
@@ -511,7 +620,7 @@ class QueryEngine:
         is_domain, reason = is_domain_query(question)
         if not is_domain:
             return {
-                "answer": "I can only answer questions about the business dataset (customers, orders, deliveries, invoices, payments, and products). Please ask a question related to these topics.",
+                "answer": "That doesn't seem related to the SAP business dataset. Try asking about orders, customers, deliveries, invoices, payments, products, plants, schedules, or credit management.",
                 "sql_used": None,
                 "data": [],
                 "highlighted_node_ids": [],
@@ -572,7 +681,7 @@ class QueryEngine:
             error_type = llm_result["error"]
             if error_type == "OUT_OF_DOMAIN":
                 return {
-                    "answer": "This question doesn't appear to be about the business dataset. I can help with questions about customers, orders, deliveries, invoices, payments, and products.",
+                    "answer": "This question doesn't appear to be about the business dataset. I can help with questions about customers, orders, deliveries, invoices, payments, products, plants, schedule lines, and credit management.",
                     "sql_used": None,
                     "data": [],
                     "highlighted_node_ids": [],

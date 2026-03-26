@@ -16,13 +16,15 @@ RUN mkdir -p /app/data /app/sap-o2c-data
 
 COPY . .
 
-# Environment variables with defaults
+# Environment variables with defaults (LLM_API_KEY set via dashboard)
 ENV LLM_PROVIDER=groq
 ENV LLM_MODEL=llama-3.3-70b-versatile
 ENV PORT=8000
 
 EXPOSE 8000
 
-# Run ingestion (only if data is missing) then start server
-# We use standard uvicorn here without --reload for production
-CMD ["sh", "-c", "python ingest.py && uvicorn main:app --host 0.0.0.0 --port 8000"]
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -f http://localhost:8000/api/stats || exit 1
+
+# Run ingestion then start server (no --reload in production)
+CMD ["sh", "-c", "python ingest.py && uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
