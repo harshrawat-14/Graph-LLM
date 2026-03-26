@@ -94,7 +94,7 @@ source venv/bin/activate
 pip install -r backend/requirements.txt
 
 # 4. Set Gemini API key (optional but required for natural language queries)
-export GEMINI_API_KEY="AIzaSyCf2KmLd_WDp1r2za6UFnGOSqfNG6tYLP4"
+export GEMINI_API_KEY="your_llm_api"
 
 # 5. Run data ingestion to build the local SQLite database
 python3 backend/ingest.py
