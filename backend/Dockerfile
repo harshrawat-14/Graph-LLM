@@ -8,13 +8,18 @@ RUN apt-get update && apt-get install -y \
     sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+# Install Python dependencies first (cache-friendly layer)
+COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create data directory for persistence
-RUN mkdir -p /app/data /app/sap-o2c-data
+# Create data directory for the SQLite database
+RUN mkdir -p /app/data
 
-COPY . .
+# Copy backend source code
+COPY backend/ .
+
+# Copy SAP data for ingestion (only 3.8 MB)
+COPY sap-o2c-data/ /app/sap-o2c-data/
 
 # Environment variables with defaults (LLM_API_KEY set via dashboard)
 ENV LLM_PROVIDER=groq

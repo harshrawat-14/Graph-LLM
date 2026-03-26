@@ -1,0 +1,12 @@
+# Root-level dockerignore (context is repo root for Render)
+backend/venv/
+backend/.venv/
+backend/.env
+backend/__pycache__/
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+.git/
+.gitignore
+*.md
+.DS_Store

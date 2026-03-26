@@ -28,8 +28,14 @@ from query_engine import QueryEngine, search_entities
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DB_PATH = str(BASE_DIR / "data" / "business.db")
+# Support both local dev (../data/business.db) and Docker (/app/data/business.db)
+_base_parent = Path(__file__).resolve().parent.parent
+_base_self   = Path(__file__).resolve().parent
+_candidates  = [
+    _base_parent / "data" / "business.db",   # local dev
+    _base_self   / "data" / "business.db",   # Docker (WORKDIR /app)
+]
+DB_PATH = str(next((p for p in _candidates if p.parent.exists()), _candidates[0]))
 
 
 # ─── Lifespan (Startup/Shutdown) ─────────────────────────────────────────────

@@ -43,8 +43,21 @@ from typing import Optional, List, Dict, Tuple
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 BASE_DIR    = Path(__file__).resolve().parent.parent
-DATA_SOURCE = BASE_DIR / "sap-o2c-data"
 DB_PATH     = BASE_DIR / "data" / "business.db"
+
+# Support both local dev (../sap-o2c-data) and Docker (/app/sap-o2c-data)
+_candidates = [
+    BASE_DIR / "sap-o2c-data",                         # local dev
+    Path(__file__).resolve().parent / "sap-o2c-data",   # Docker (WORKDIR /app)
+]
+DATA_SOURCE = next((p for p in _candidates if p.is_dir()), _candidates[0])
+
+# Similarly, ensure DB_PATH parent works inside Docker
+if not DB_PATH.parent.exists():
+    _docker_db = Path(__file__).resolve().parent / "data" / "business.db"
+    if _docker_db.parent.exists() or True:  # always fallback in Docker
+        DB_PATH = _docker_db
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # How many threads to use for parallel JSONL reading.
 # Each folder is one task → cap at folder count, but 8 is plenty for disk I/O.

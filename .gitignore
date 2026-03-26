@@ -34,5 +34,5 @@ Thumbs.db
 *.log
 /tmp/
 
-# Data source
-sap-o2c-data/
+# Data source (3.8 MB — small enough to include for deployment)
+# sap-o2c-data/  ← intentionally tracked so Render can ingest
