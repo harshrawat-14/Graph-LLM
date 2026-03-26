@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  backend:
+    build: 
+      context: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data  # Persistence for SQLite database
+      - ./sap-o2c-data:/app/sap-o2c-data:ro  # Read-only ingestion data
+    environment:
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - LLM_MODEL=${LLM_MODEL:-llama-3.3-70b-versatile}
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Pass backend URL at build time for React (use public URL in cloud)
+        - VITE_API_URL=${PUBLIC_BACKEND_URL:-http://localhost:8000}
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always

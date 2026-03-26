@@ -1,0 +1,35 @@
+# Python Virtual Environments
+venv/
+backend/venv/
+.venv/
+env/
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node.js
+frontend/node_modules/
+frontend/dist/
+.eslintcache
+
+# Environment Variables (IMPORTANT: Never commit real keys!)
+.env
+backend/.env
+frontend/.env
+frontend/.env.local
+
+# Database
+data/business.db
+data/business.db-journal
+data/business.db-wal
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/tmp/
